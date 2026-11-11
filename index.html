@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数式検知 & 高校数学 LaTeX 変換ツール</title>
+
+  <!-- KaTeX CSS & JS (高速な数式レンダリングライブラリ) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8" crossorigin="anonymous"></script>
+
+  <!-- スタイルシート -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- ヘッダー -->
+    <header>
+      <div class="header-inner">
+        <div class="logo-area">
+          <span class="logo-icon">∑</span>
+          <div>
+            <h1>数式検知 & 高校数学 LaTeX 変換 Web App</h1>
+            <p class="subtitle">自然文やテキストから数式・公式名を自動検知し、日本の高校数学（数I・A・II・B・III・C）の辞書を参照してLaTeX形式へ変換</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-grid">
+      <!-- 入力カード -->
+      <section class="card input-card">
+        <div class="card-header">
+          <div class="card-title">📝 入力テキスト</div>
+          <div class="sample-buttons">
+            <span class="sample-label">サンプル読込:</span>
+            <button id="sampleBtn4" class="btn-primary btn-sm" type="button">📋 船舶規則・表コピペ(改行分数)</button>
+            <button id="sampleBtn1" class="btn-secondary btn-sm" type="button">数I・A 総合</button>
+            <button id="sampleBtn2" class="btn-secondary btn-sm" type="button">数II・B・III 微積分・数列</button>
+            <button id="sampleBtn3" class="btn-secondary btn-sm" type="button">ベクトル・確率・複素数</button>
+          </div>
+        </div>
+
+        <textarea id="inputText" placeholder="数式を含む文章や、高校数学の公式名を入力してください...
+例:
+放物線 y = ax^2 + bx + c の頂点を求める。解の公式 x = (-b +- sqrt(b^2 - 4ac))/(2a) を使う。
+三角形ABCにおいて 正弦定理 や 余弦定理 が成り立つ。
+極限 lim_{x->0} (sin x)/x = 1 や 等比数列の和 を求める。"></textarea>
+
+        <div class="control-bar">
+          <div class="control-left">
+            <button id="detectBtn" class="btn-primary" type="button">⚡ 数式を検知・変換</button>
+            <button id="clearBtn" class="btn-secondary" type="button">クリア</button>
+            <label class="checkbox-label">
+              <input type="checkbox" id="autoDetect" checked> 入力時にリアルタイム変換
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- 検出結果カード -->
+      <section class="card results-card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🎯 検知された数式一覧</span>
+            <span id="resultCount" class="badge badge-count">0 件</span>
+          </div>
+          <div>
+            <button id="copyAllBtn" class="btn-secondary btn-sm" type="button">📑 全LaTeX一括コピー</button>
+          </div>
+        </div>
+
+        <div id="resultsSection" style="display: none;">
+          <div class="table-responsive">
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th style="width: 40px;">No.</th>
+                  <th style="width: 170px;">分類 / 検知種別</th>
+                  <th style="width: 220px;">検知された文字列</th>
+                  <th>変換後 LaTeX コード</th>
+                  <th>LaTeX プレビュー</th>
+                  <th style="width: 160px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="resultsTableBody">
+                <!-- JavaScript で動的生成 -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="emptyState" class="empty-state">
+          <div class="empty-icon">🔍</div>
+          <p>入力テキストから数式または公式名が検出されていません。</p>
+          <p style="font-size: 0.85rem; margin-top: 4px;">上のサンプルボタンを押すか、テキストを入力してみてください。</p>
+        </div>
+      </section>
+
+      <!-- 高校数学公式辞書リファレンス -->
+      <section class="dict-accordion">
+        <details>
+          <summary>
+            <span>📚 参照中の高校数学 変換辞書（数I・A・II・B・III・Cの公式一覧を閲覧）</span>
+            <span style="font-size: 0.85rem; color: var(--text-muted); font-weight: normal;">クリックで開閉 ▼</span>
+          </summary>
+          <div class="dict-inner">
+            <div class="dict-search-bar">
+              <input type="text" id="dictSearch" placeholder="公式名、キーワード、カテゴリで辞書を検索... (例: 解の公式, 加法定理, ベクトル, 微分)">
+            </div>
+            <div id="dictContainer">
+              <!-- JavaScript で辞書一覧を動的生成 -->
+            </div>
+          </div>
+        </details>
+      </section>
+    </div>
+  </div>
+
+  <!-- コピー通知トースト -->
+  <div id="copyToast" class="toast">クリップボードにコピーしました</div>
+
+  <!-- スクリプト読み込み -->
+  <script src="math_dict.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
+
