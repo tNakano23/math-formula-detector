@@ -315,7 +315,38 @@ table.results-table tbody tr:hover {
 }
 
 .col-latex {
-  max-width: 260px;
+  min-width: 280px;
+}
+
+.suggest-pill-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.btn-suggest-pill {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-suggest-pill:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.btn-suggest-pill.active {
+  background: var(--primary-color);
+  color: #ffffff;
+  border-color: var(--primary-color);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.2);
 }
 
 .latex-code-box {
@@ -356,109 +387,6 @@ table.results-table tbody tr:hover {
 .empty-icon {
   font-size: 2.5rem;
   margin-bottom: 8px;
-}
-
-/* 辞書ビューア・アコーディオン */
-.dict-accordion details {
-  background: var(--card-bg);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.dict-accordion summary {
-  padding: 16px 20px;
-  font-weight: 600;
-  cursor: pointer;
-  background-color: #f8fafc;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.dict-accordion summary:hover {
-  background-color: #f1f5f9;
-}
-
-.dict-inner {
-  padding: 20px;
-}
-
-.dict-search-bar {
-  margin-bottom: 18px;
-}
-
-.dict-search-bar input {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius);
-  font-size: 0.9rem;
-}
-
-.dict-category-section {
-  margin-bottom: 24px;
-}
-
-.dict-category-title {
-  font-size: 1.02rem;
-  font-weight: 700;
-  color: #1e3a8a;
-  border-left: 4px solid var(--primary-color);
-  padding-left: 10px;
-  margin-bottom: 12px;
-}
-
-.dict-card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.dict-card {
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  padding: 12px;
-  background: #ffffff;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-}
-
-.dict-card:hover {
-  border-color: #94a3b8;
-  box-shadow: var(--shadow-sm);
-}
-
-.dict-card-header strong {
-  font-size: 0.92rem;
-  color: #0f172a;
-}
-
-.dict-card-desc {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-}
-
-.dict-card-preview {
-  background: #f8fafc;
-  padding: 10px;
-  border-radius: 4px;
-  text-align: center;
-  overflow-x: auto;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.dict-card-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
 }
 
 /* トースト通知 */

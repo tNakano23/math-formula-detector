@@ -1,15 +1,17 @@
 /**
- * 数式検知・LaTeX変換アプリケーション ロジック
- * 高校数学公式辞書連携 & ドキュメント/PDFコピペ（改行分数・数学Unicode・表記号）対応
+ * 技術文書・PDFコピペ数式検知 & LaTeX変換アプリケーション
+ * - 改行で崩れた分数・式の復元
+ * - 表記号列・独立変数の自動抽出
+ * - 下付き添字 / 乗算(A·B) / 上付き累乗(A^B) / 単一変数の解釈サジェスト機能
  */
 
 class MathFormulaDetector {
-  constructor(dictionary) {
-    this.dict = dictionary;
+  constructor(tokens) {
+    this.tokens = tokens || {};
   }
 
   /**
-   * 与えられたテキストから数式箇所を検知・抽出し、LaTeX形式に変換してリストで返す
+   * 与えられたテキストから数式箇所を検知・抽出し、サジェスト候補付きでリストを返す
    * @param {string} text 入力文字列
    * @returns {Array} 検出結果オブジェクトの配列
    */
@@ -17,19 +19,29 @@ class MathFormulaDetector {
     if (!text || typeof text !== "string") return [];
 
     const results = [];
-    const usedRanges = []; // 重複抽出を防ぐための範囲管理 [{start, end}]
+    const usedRanges = [];
 
     const isOverlapping = (start, end) => {
       return usedRanges.some(r => Math.max(start, r.start) < Math.min(end, r.end));
     };
 
-    const addResult = (original, latex, type, category, start, end, description = "") => {
+    const addResult = (original, type, category, start, end, description = "") => {
+      // 4つの解釈サジェストを生成
+      const suggestions = {
+        subscript: this.convertRawExpressionToLatex(original, "subscript"),
+        multiply: this.convertRawExpressionToLatex(original, "multiply"),
+        superscript: this.convertRawExpressionToLatex(original, "superscript"),
+        literal: this.convertRawExpressionToLatex(original, "literal")
+      };
+
       results.push({
         id: results.length + 1,
         original: original.trim(),
-        latex: latex.trim(),
+        latex: suggestions.subscript, // デフォルト表示は下付き添字
+        currentMode: "subscript",
+        suggestions,
         type,
-        category: category || "一般数式",
+        category: category || "数式",
         description,
         range: [start, end]
       });
@@ -51,48 +63,13 @@ class MathFormulaDetector {
         const start = match.index;
         const end = start + match[0].length;
         if (!isOverlapping(start, end)) {
-          const content = match[1];
-          const converted = this.convertRawExpressionToLatex(content);
-          addResult(match[0], converted, type, "明示的数式記法", start, end);
+          addResult(match[1], type, "明示的数式記法", start, end);
         }
       }
     }
 
     // ----------------------------------------------------
-    // ステップ 2: 公式辞書（名称・キーワード）によるマッチング
-    // ----------------------------------------------------
-    if (this.dict && this.dict.namedFormulas) {
-      const sortedNamed = [...this.dict.namedFormulas].sort((a, b) => {
-        const maxLenA = Math.max(...a.keywords.map(k => k.length));
-        const maxLenB = Math.max(...b.keywords.map(k => k.length));
-        return maxLenB - maxLenA;
-      });
-
-      for (const formula of sortedNamed) {
-        for (const kw of formula.keywords) {
-          let pos = 0;
-          while ((pos = text.indexOf(kw, pos)) !== -1) {
-            const start = pos;
-            const end = pos + kw.length;
-            if (!isOverlapping(start, end)) {
-              addResult(
-                kw,
-                formula.latex,
-                "公式名辞書マッチ",
-                formula.category,
-                start,
-                end,
-                formula.description
-              );
-            }
-            pos = end;
-          }
-        }
-      }
-    }
-
-    // ----------------------------------------------------
-    // ステップ 3: ドキュメント/PDFコピー（表の記号・改行を含む等式数式ブロック）の検出
+    // ステップ 2: 表の記号・改行を含む等式数式ブロックの検出 (PDFコピペ対応)
     // ----------------------------------------------------
     const lines = text.split(/\r?\n/);
     let lineOffset = 0;
@@ -111,7 +88,7 @@ class MathFormulaDetector {
         continue;
       }
 
-      // パターン 3-A: 等号「=」を含む数式（改行で縦並びになった分数等を含む可能性あり）
+      // パターン 2-A: 等号「=」を含む数式（改行で縦並びになった分数等を含む）
       if (trimmed.includes("=") && !/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]{4,}/.test(trimmed.split("=")[0])) {
         let formulaBlock = rawLine;
         let j = i + 1;
@@ -151,8 +128,7 @@ class MathFormulaDetector {
 
         const blockEnd = currentStart + formulaBlock.length;
         if (!isOverlapping(currentStart, blockEnd)) {
-          const converted = this.convertRawExpressionToLatex(formulaBlock);
-          addResult(formulaBlock, converted, "等式・算式検知", "工学・規則算式", currentStart, blockEnd);
+          addResult(formulaBlock, "等式・算式検知", "方程式・計算式", currentStart, blockEnd);
         }
 
         lineOffset = nextOffset;
@@ -160,26 +136,24 @@ class MathFormulaDetector {
         continue;
       }
 
-      // パターン 3-B: 表の記号列（独立行に置かれた英字・数学イタリック記号: 例 𝐶𝑊_𝐿𝐶, 𝐶𝑉𝑃_𝐿𝐶）
+      // パターン 2-B: 表の記号列（独立行に置かれた英字・数学イタリック記号: 例 𝐶𝑊_𝐿𝐶, 𝐶𝑉𝑃_𝐿𝐶）
       if (/^[\u{1D400}-\u{1D7FF}A-Za-z0-9_]+$/u.test(trimmed)) {
         if (!isOverlapping(currentStart, currentEnd)) {
-          const converted = this.convertRawExpressionToLatex(trimmed);
-          addResult(trimmed, converted, "表記号検知", "変数・係数記号", currentStart, currentEnd);
+          addResult(trimmed, "表記号検知", "変数・係数記号", currentStart, currentEnd);
         }
         lineOffset += rawLine.length + 1;
         i++;
         continue;
       }
 
-      // パターン 3-C: 「V 最大航海速力（1.4.3.1-7 参照） knot」のように行頭に独立した英字変数がある場合
+      // パターン 2-C: 「V 最大航海速力... knot」のように行頭に独立した英字変数がある場合
       const rowMatch = trimmed.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])\s+([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF].*)/u);
       if (rowMatch) {
         const symbol = rowMatch[1];
         const symStart = currentStart;
         const symEnd = currentStart + symbol.length;
         if (!isOverlapping(symStart, symEnd)) {
-          const converted = this.convertRawExpressionToLatex(symbol);
-          addResult(symbol, converted, "表記号検知", "変数・係数記号", symStart, symEnd, "行頭の独立変数記号");
+          addResult(symbol, "表記号検知", "変数・係数記号", symStart, symEnd, "表行頭の独立変数");
         }
       }
 
@@ -188,9 +162,9 @@ class MathFormulaDetector {
     }
 
     // ----------------------------------------------------
-    // ステップ 4: テキスト中の一般的な数式パターンの検知
+    // ステップ 3: テキスト中の一般的な数式・関係式の検知
     // ----------------------------------------------------
-    const mathPattern = /((?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+[=<>≦≧≠≒+\-*\/×÷±∓^−]\s*(?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+)/gu;
+    const mathPattern = /((?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+[=<>≦≧≠≒+\-*\/×÷±∓^−]\s*(?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+)/gu;
 
     let mMatch;
     while ((mMatch = mathPattern.exec(text)) !== null) {
@@ -205,30 +179,7 @@ class MathFormulaDetector {
 
       const mathCharCount = (candidate.match(/[0-9a-zA-Z\u{1D400}-\u{1D7FF}=+\-*/^√∫∑<>≦≧≠−]/gu) || []).length;
       if (mathCharCount >= 3 && !isOverlapping(start, end)) {
-        const converted = this.convertRawExpressionToLatex(candidate);
-        addResult(candidate, converted, "構文検知", "代数・関数・方程式", start, end);
-      }
-    }
-
-    // ----------------------------------------------------
-    // ステップ 5: 高校数学特有表記（順列組合せ, ベクトル, 根号）
-    // ----------------------------------------------------
-    const specificPatterns = [
-      { regex: /\b([0-9nkm])\s*([CPH])\s*([0-9rkm])\b/g, cat: "場合の数・確率", desc: "順列・組合せ" },
-      { regex: /\bvec\(([A-Za-z0-9]+)\)/g, cat: "ベクトル", desc: "ベクトル記法" },
-      { regex: /(?:ベクトル|vec)\s*([A-Z]{2}|[a-z])/g, cat: "ベクトル", desc: "ベクトル記法" },
-      { regex: /\b(?:sqrt|√)\s*\(([^)]+)\)|\b(?:sqrt|√)\s*([a-zA-Z0-9]+)/g, cat: "根号・無理数", desc: "平方根" }
-    ];
-
-    for (const pat of specificPatterns) {
-      let sMatch;
-      while ((sMatch = pat.regex.exec(text)) !== null) {
-        const start = sMatch.index;
-        const end = start + sMatch[0].length;
-        if (!isOverlapping(start, end)) {
-          const converted = this.convertRawExpressionToLatex(sMatch[0]);
-          addResult(sMatch[0], converted, "記号構文検知", pat.cat, start, end, pat.desc);
-        }
+        addResult(candidate, "構文検知", "代数・関係式", start, end);
       }
     }
 
@@ -242,85 +193,54 @@ class MathFormulaDetector {
   }
 
   /**
-   * テキスト形式の数式文字列を整ったLaTeXに変換
-   * @param {string} expr 
+   * テキスト形式の数式文字列を指定モードに応じたLaTeXに変換
+   * @param {string} expr 数式文字列
+   * @param {string} mode 'subscript' | 'multiply' | 'superscript' | 'literal'
    * @returns {string} LaTeX表現
    */
-  convertRawExpressionToLatex(expr) {
+  convertRawExpressionToLatex(expr, mode = "subscript") {
     if (!expr) return "";
     let s = expr.trim();
 
-    // 先頭・末尾の $, $$, ` を除去
     s = s.replace(/^(\$\$|\$|`)+|(\$\$|\$|`)+$/g, "");
 
     // 1. 改行された縦並び分数の復元 (PDFコピペ対策)
-    // 括弧内の縦並び分数: ( 1 - \n CB \n CW \n? ) -> ( 1 - \frac{CB}{CW} )
     s = s.replace(/\(([^()\n]+?)\s*([+\-−*\/])\s*\n\s*([^\s()\n]+)\s*\n\s*([^\s()\n]+)\s*\n?\s*\)/gu, (match, left, op, num, den) => {
-      return `(${this.convertRawExpressionToLatex(left.trim())} ${op} \\frac{${this.convertRawExpressionToLatex(num)}}{${this.convertRawExpressionToLatex(den)}})`;
+      return `(${this.convertRawExpressionToLatex(left.trim(), mode)} ${op} \\frac{${this.convertRawExpressionToLatex(num, mode)}}{${this.convertRawExpressionToLatex(den, mode)}})`;
     });
 
-    // 等号直後の縦並び分数: = \n CB_LC \n CW_LC -> = \frac{CB_LC}{CW_LC}
     s = s.replace(/=\s*\n\s*([^\s=\n]+)\s*\n\s*([^\s=\n]+)/gu, (match, num, den) => {
-      return `= \\frac{${this.convertRawExpressionToLatex(num)}}{${this.convertRawExpressionToLatex(den)}}`;
+      return `= \\frac{${this.convertRawExpressionToLatex(num, mode)}}{${this.convertRawExpressionToLatex(den, mode)}}`;
     });
 
-    // 改行をスペースに置換
     s = s.replace(/\s*\n\s*/g, " ");
 
-    // 2. 記号・トークン変換辞書による置換 (Greek, operators etc.)
-    if (this.dict && this.dict.tokenReplacements) {
-      for (const item of this.dict.tokenReplacements) {
+    // 2. ギリシャ文字・演算子の正規化
+    if (this.tokens.greek) {
+      for (const item of this.tokens.greek) {
+        s = s.replace(item.pattern, item.replace);
+      }
+    }
+    if (this.tokens.operators) {
+      for (const item of this.tokens.operators) {
         s = s.replace(item.pattern, item.replace);
       }
     }
 
-    // 3. 識別子（変数・添字）の整形
-    // 例: 𝐶𝑊_𝐿𝐶 -> 𝐶_{𝑊_𝐿𝐶}, 𝐶𝑉𝑃_𝐿𝐶 -> 𝐶_{𝑉𝑃_𝐿𝐶}, 𝐶𝐵_𝐿𝐶 -> 𝐶_{𝐵_𝐿𝐶}, 𝐶𝑊 -> 𝐶_{𝑊}, 𝐶𝐵 -> 𝐶_𝐵, 𝑓𝑇 -> 𝑓_{𝑇}
+    // 3. 識別子（変数・添字）の解釈モード別変換
     s = s.replace(/[\u{1D400}-\u{1D7FF}A-Za-z0-9_]+/gu, (token) => {
-      // 予約語やコマンド、純粋な数字はスキップ
       if (/^\d+$/.test(token)) return token;
-      if (/^(sin|cos|tan|log|ln|exp|lim|sum|int|sqrt|cbrt|frac|vec|mathrm)$/.test(token)) return token;
-      return this.normalizeIdentifier(token);
+      if (/^(sin|cos|tan|log|ln|exp|lim|sum|int|sqrt|cbrt|frac|vec|mathrm|partial)$/.test(token)) return token;
+      return this.formatIdentifierWithMode(token, mode);
     });
 
-    // 4. 順列・組合せ (nCr, nPr, nHr)
-    s = s.replace(/([0-9a-zA-Z]+)\s*([CPH])\s*([0-9a-zA-Z]+)/g, (match, n, type, r) => {
-      return `{}_{${n}}\\mathrm{${type}}_{${r}}`;
-    });
-
-    // 5. ベクトル
-    s = s.replace(/(?:ベクトル|vec)\s*([A-Z]{2})/g, "\\overrightarrow{$1}");
-    s = s.replace(/\bvec\(([A-Z]{2})\)/g, "\\overrightarrow{$1}");
-    s = s.replace(/(?:ベクトル|vec)\s*([a-zA-Z])/g, "\\vec{$1}");
-    s = s.replace(/\bvec\(([a-zA-Z])\)/g, "\\vec{$1}");
-
-    // 6. 極限 lim
-    s = s.replace(/lim\s*\(\s*([a-zA-Z])\s*(?:->|\\to)\s*([^,)]+)\s*,\s*([^)]+)\)/g, "\\lim_{$1 \\to $2} $3");
-    s = s.replace(/lim_\{?([a-zA-Z])\s*(?:->|\\to)\s*([^}]+)\}?/g, "\\lim_{$1 \\to $2}");
-    s = s.replace(/\blim\b/g, "\\lim");
-
-    // 7. シグマ sum
-    s = s.replace(/sum_\{?([^}]+)\}?\^\{?([^}]+)\}?/g, "\\sum_{$1}^{$2}");
-    s = s.replace(/∑_\{?([^}]+)\}?\^\{?([^}]+)\}?/g, "\\sum_{$1}^{$2}");
-    s = s.replace(/\b(sum|∑)\b/g, "\\sum");
-
-    // 8. 積分 int / ∫
-    s = s.replace(/(?:int|∫)_\{?([^}^_]+)\}?\^\{?([^}]+)\}?/g, "\\int_{$1}^{$2}");
-    s = s.replace(/(?:int|∫)\s*\(([^,]+),([^,]+),([^)]+)\)/g, "\\int_{$1}^{$2} $3");
-    s = s.replace(/\b(int|∫)\b/g, "\\int");
-
-    // 9. 平方根・累乗根
-    s = s.replace(/\bcbrt\s*\(([^)]+)\)/g, "\\sqrt[3]{$1}");
-    s = s.replace(/(?:sqrt|√)\s*\(([^)]+)\)/g, "\\sqrt{$1}");
-    s = s.replace(/(?:sqrt|√)\s*([0-9a-zA-Z]+)/g, "\\sqrt{$1}");
-
-    // 10. 関数名正規化
+    // 4. 関数名正規化
     s = s.replace(/\b(sin|cos|tan|log|ln|exp|max|min|det)\b(?!\s*\\)/g, "\\$1");
 
-    // 11. 乗算記号 * の変換
+    // 5. 乗算記号 * の変換
     s = s.replace(/\s*\*\s*/g, " \\cdot ");
 
-    // 12. 分数の簡易変換: (A)/(B) -> \frac{A}{B}
+    // 6. 分数の簡易変換 (A)/(B) -> \frac{A}{B}
     let prev;
     do {
       prev = s;
@@ -332,13 +252,13 @@ class MathFormulaDetector {
       return `\\frac{${num}}{${den}}`;
     });
 
-    // 13. 指数 ^ と下付き _ の括弧囲み保証
+    // 7. 指数 ^ と下付き _ の括弧囲み保証
     s = s.replace(/\^([a-zA-Z0-9+\-]+)(?!})/g, "^{$1}");
 
-    // 14. 微分記法 f'(x), dy/dx
+    // 8. 微分記法
     s = s.replace(/d([a-zA-Z])\/d([a-zA-Z])/g, "\\frac{d$1}{d$2}");
+    s = s.replace(/\\partial\s*([a-zA-Z])\/\\partial\s*([a-zA-Z])/g, "\\frac{\\partial $1}{\\partial $2}");
 
-    // 括弧前後の空白調整
     s = s.replace(/\s*\)/g, ")");
     s = s.replace(/\(\s*/g, "(");
     s = s.replace(/\s+/g, " ").trim();
@@ -347,24 +267,75 @@ class MathFormulaDetector {
   }
 
   /**
-   * 変数・添字識別子の整形
+   * 識別子トークンを各モードに応じて整形
+   * @param {string} id 
+   * @param {string} mode 'subscript' | 'multiply' | 'superscript' | 'literal'
    */
-  normalizeIdentifier(id) {
-    // 1. 基底1文字 + 添字1 + '_' + 添字2 (例: 𝐶𝑊_𝐿𝐶 -> 𝐶_{𝑊_𝐿𝐶}, 𝐶𝑉𝑃_𝐿𝐶 -> 𝐶_{𝑉𝑃_𝐿𝐶}, 𝐶𝐵_𝐿𝐶 -> 𝐶_{𝐵_𝐿𝐶})
+  formatIdentifierWithMode(id, mode) {
+    // A. アンダースコアを含むトークン (例: CW_LC, CVP_LC, X_Y)
     let m = id.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])([\u{1D400}-\u{1D7FF}A-Za-z]*)_([\u{1D400}-\u{1D7FF}A-Za-z0-9_]+)$/u);
     if (m) {
-      if (m[2]) {
-        return `${m[1]}_{${m[2]}_${m[3]}}`;
-      } else {
-        return `${m[1]}_{${m[3]}}`;
+      const base = m[1];
+      const part1 = m[2];
+      const part2 = m[3];
+
+      switch (mode) {
+        case "subscript":
+          return part1 ? `${base}_{${part1}_${part2}}` : `${base}_{${part2}}`;
+        case "multiply":
+          return part1 ? `${base} \\cdot ${part1}_{${part2}}` : `${base}_{${part2}}`;
+        case "superscript":
+          return part1 ? `${base}^{${part1}_${part2}}` : `${base}^{${part2}}`;
+        case "literal":
+          return `\\mathrm{${id.replace(/_/g, "\\_")}}`;
+        default:
+          return `${base}_{${part1 ? part1 + "_" : ""}${part2}}`;
       }
     }
 
-    // 2. 2文字の数学イタリック文字: 𝐶𝑊 -> 𝐶_{𝑊}, 𝐶𝐵 -> 𝐶_𝐵, 𝑓𝑇 -> 𝑓_{𝑇}
+    // B. 2文字の英字・数学イタリック文字 (例: CW, CB, fT, AB, xy)
     m = id.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])([\u{1D400}-\u{1D7FF}A-Za-z])$/u);
     if (m) {
-      if (id === "𝐶𝐵") return `${m[1]}_${m[2]}`;
-      return `${m[1]}_{${m[2]}}`;
+      const b1 = m[1];
+      const b2 = m[2];
+
+      switch (mode) {
+        case "subscript": // 下付き解釈: C_W, f_T
+          return `${b1}_{${b2}}`;
+        case "multiply": // 乗算解釈: C · W, A · B
+          return `${b1} \\cdot ${b2}`;
+        case "superscript": // 上付き累乗解釈: C^W, x^2
+          return `${b1}^{${b2}}`;
+        case "literal": // 通常の連名変数: \mathrm{CW}
+          return `\\mathrm{${id}}`;
+        default:
+          return `${b1}_{${b2}}`;
+      }
+    }
+
+    // C. 変数 + 単一数字 (例: x2, y1, W0)
+    m = id.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])([0-9])$/u);
+    if (m) {
+      const letter = m[1];
+      const num = m[2];
+
+      switch (mode) {
+        case "subscript": // x_2
+          return `${letter}_{${num}}`;
+        case "superscript": // x^2
+          return `${letter}^{${num}}`;
+        case "multiply": // x · 2
+          return `${letter} \\cdot ${num}`;
+        case "literal":
+          return `\\mathrm{${id}}`;
+      }
+    }
+
+    // D. 3文字以上の英字連続 (例: CVP, max, Re)
+    if (/^[\u{1D400}-\u{1D7FF}A-Za-z]{3,}$/u.test(id)) {
+      if (mode === "literal") {
+        return `\\mathrm{${id}}`;
+      }
     }
 
     return id;
@@ -375,16 +346,18 @@ class MathFormulaDetector {
 // UI インタラクション & KaTeX レンダリング
 // ==========================================
 document.addEventListener("DOMContentLoaded", () => {
-  const detector = new MathFormulaDetector(MATH_DICTIONARY);
+  const detector = new MathFormulaDetector(MATH_TOKENS);
 
   const inputText = document.getElementById("inputText");
   const detectBtn = document.getElementById("detectBtn");
   const clearBtn = document.getElementById("clearBtn");
-  const sampleBtn1 = document.getElementById("sampleBtn1");
-  const sampleBtn2 = document.getElementById("sampleBtn2");
-  const sampleBtn3 = document.getElementById("sampleBtn3");
-  const sampleBtn4 = document.getElementById("sampleBtn4");
   const autoDetectCheckbox = document.getElementById("autoDetect");
+
+  // 実践的サンプルボタン群
+  const sampleBtnShip = document.getElementById("sampleBtnShip");
+  const sampleBtnPhysics = document.getElementById("sampleBtnPhysics");
+  const sampleBtnML = document.getElementById("sampleBtnML");
+  const sampleBtnMech = document.getElementById("sampleBtnMech");
 
   const resultsSection = document.getElementById("resultsSection");
   const resultsTableBody = document.getElementById("resultsTableBody");
@@ -393,36 +366,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const copyAllBtn = document.getElementById("copyAllBtn");
   const copyToast = document.getElementById("copyToast");
 
-  const dictContainer = document.getElementById("dictContainer");
-  const dictSearch = document.getElementById("dictSearch");
-
-  // サンプルテキスト定義
-  const samples = {
-    sample1: `【高校数学 総合問題サンプル】
-放物線 y = ax^2 + bx + c の頂点を求めるために平方完成を行います。
-2次方程式の解は 解の公式 x = (-b +- sqrt(b^2 - 4ac))/(2a) によって導出されます。
-判別式 D = b^2 - 4ac を用いると、D > 0 のとき異なる2つの実数解を持ちます。
-
-また、三角形ABCにおいて、外接円の半径を R とするとき、正弦定理 a/sin A = b/sin B = c/sin C = 2R が成り立ちます。
-さらに、余弦定理 a^2 = b^2 + c^2 - 2bc*cos(A) も重要です。`,
-
-    sample2: `【数B・数III 微積分と極限・数列】
-等差数列の一般項は a_n = a_1 + (n - 1)d で表され、等差数列の和は S_n = n(a_1 + a_n)/2 です。
-シグマの計算では sum_{k=1}^n k = n(n+1)/2 や 自然数の和 が頻出です。
-
-極限値の公式として lim_{x->0} (sin x)/x = 1 や ネイピア数の定義 e = lim_{n->inf} (1 + 1/n)^n があります。
-微分法では 積の導関数 (f*g)' = f'*g + f*g' や 合成関数の微分 dy/dx = (dy/du)*(du/dx) を使います。
-定積分の計算例: int_0^1 x^2 dx = 1/3`,
-
-    sample3: `【数A・数C ベクトルと確率・複素数】
-10人の中から委員長と副委員長を選ぶ方法は順列 10P2 であり、3人の委員を選ぶ方法は組合せ 10C3 です。
-反復試行の確率 や 条件付き確率 P(B|A) = P(A∩B)/P(A) も重要です。
-
-ベクトルにおいて、内積の定義は vec(a)・vec(b) = |vec(a)||vec(b)|cos(theta) であり、
-ベクトルの垂直条件は vec(a)・vec(b) = 0 です。
-複素数平面では ド・モアブルの定理 (cos(theta) + i*sin(theta))^n = cos(n*theta) + i*sin(n*theta) が成り立ちます。`,
-
-    sample4: `記号 意味 単位
+  // 実用的なお試し例文集（PDF・論文・規格書コピペ）
+  const practicalSamples = {
+    ship: `記号 意味 単位
 𝐶𝑊_𝐿𝐶
 考慮している積付状態における水線面積係数。ただし，この値が予め求められ
 ていない場合，次の算式を用いても差し支えない。
@@ -438,7 +384,36 @@ document.addEventListener("DOMContentLoaded", () => {
 𝐶𝐵_𝐿𝐶
 𝐶𝑊_𝐿𝐶
 -
-V 最大航海速力（1.4.3.1-7 参照） knot`
+V 最大航海速力（1.4.3.1-7 参照） knot`,
+
+    physics: `【流体力学 & 熱力学の仕様書コピペ例】
+配管内流体のレイノルズ数 Re は代表速度 v と管径 D および動粘性係数 ν を用いて次式で定義される：
+Re =
+rho v D
+mu
+臨界レイノルズ数 Re_c ≒ 2300 において層流から乱流へ遷移する。
+
+また、理想気体の状態方程式は圧力 P, 体積 V, 物質量 n, 温度 T に対して
+P V = n R T
+が成立し、密度 rho_0 と標準状態での圧力 P_0 の関係式として用いられる。`,
+
+    ml: `【機械学習・最適化アルゴリズムの論文コピペ例】
+平均二乗誤差 (MSE) による損失関数 L は、予測値 y_hat と真値 y_i の差として定義される：
+L = 1/2 sum (y_i - y_hat)^2
+
+パラメータ更新則において、学習率 alpha および勾配 ∂L/∂W を用いて重み行列 W_new を次のように逐次更新する：
+W_new = W_old - alpha (∂L/∂W)
+ここでバイアス項 b_1, b_2 も同様の更新式に従う。`,
+
+    mech: `【材料力学・構造設計メモのコピペ例】
+断面にかかる曲げモーメントを M, 断面係数を Z とするとき、最大曲げ応力 sigma_max は
+sigma_max =
+M
+Z
+で与えられる。
+幅 b, 高さ h の長方形断面における断面二次モーメント I は
+I = b h^3 / 12
+であり、せん断応力 tau_max <= tau_a (許容応力) を満足しなければならない。`
   };
 
   function showToast(message) {
@@ -453,8 +428,7 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
   function copyToClipboard(text, successMsg = "コピーしました！") {
     navigator.clipboard.writeText(text).then(() => {
       showToast(successMsg);
-    }).catch(err => {
-      console.error("Copy failed", err);
+    }).catch(() => {
       const ta = document.createElement("textarea");
       ta.value = text;
       document.body.appendChild(ta);
@@ -465,6 +439,8 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
     });
   }
 
+  let currentItems = [];
+
   function runDetection() {
     const text = inputText.value;
     if (!text.trim()) {
@@ -472,13 +448,14 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
       resultCountBadge.textContent = "0 件";
       emptyState.style.display = "block";
       resultsSection.style.display = "none";
+      currentItems = [];
       return;
     }
 
-    const items = detector.detectAndConvert(text);
-    resultCountBadge.textContent = `${items.length} 件`;
+    currentItems = detector.detectAndConvert(text);
+    resultCountBadge.textContent = `${currentItems.length} 件`;
 
-    if (items.length === 0) {
+    if (currentItems.length === 0) {
       resultsTableBody.innerHTML = "";
       emptyState.style.display = "block";
       resultsSection.style.display = "none";
@@ -487,9 +464,13 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
 
     emptyState.style.display = "none";
     resultsSection.style.display = "block";
+    renderResultsTable();
+  }
+
+  function renderResultsTable() {
     resultsTableBody.innerHTML = "";
 
-    items.forEach((item) => {
+    currentItems.forEach((item) => {
       const tr = document.createElement("tr");
 
       // No.
@@ -498,7 +479,7 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
       tdNo.textContent = item.id;
       tr.appendChild(tdNo);
 
-      // カテゴリ・検出種別
+      // 分類
       const tdType = document.createElement("td");
       tdType.className = "col-type";
       tdType.innerHTML = `
@@ -516,43 +497,68 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
       tdOriginal.appendChild(codeOrig);
       tr.appendChild(tdOriginal);
 
-      // LaTeXコード
+      // サジェスト切替 + LaTeXコード
       const tdLatex = document.createElement("td");
       tdLatex.className = "col-latex";
-      const preLatex = document.createElement("div");
-      preLatex.className = "latex-code-box";
-      preLatex.textContent = item.latex;
-      tdLatex.appendChild(preLatex);
-      tr.appendChild(tdLatex);
 
-      // KaTeX プレビュー描画
-      const tdPreview = document.createElement("td");
-      tdPreview.className = "col-preview";
+      // サジェストピルUI
+      const suggestPills = document.createElement("div");
+      suggestPills.className = "suggest-pill-group";
+
+      const modes = [
+        { key: "subscript", label: "🏷️ 下付き (A_B)", tip: "添字・下付き文字として解釈" },
+        { key: "multiply", label: "✖️ 乗算 (A·B)", tip: "2文字の掛け算として解釈" },
+        { key: "superscript", label: "🔺 上付き (A^B)", tip: "指数・累乗として解釈" },
+        { key: "literal", label: "🔤 単一変数 (AB)", tip: "1つの英字単語として解釈" }
+      ];
+
+      const latexBox = document.createElement("div");
+      latexBox.className = "latex-code-box";
+      latexBox.textContent = item.latex;
+
       const previewDiv = document.createElement("div");
       previewDiv.className = "katex-rendered";
-      
-      try {
-        if (window.katex) {
-          window.katex.render(item.latex, previewDiv, {
-            displayMode: true,
-            throwOnError: false
-          });
-        } else {
-          previewDiv.textContent = item.latex;
-        }
-      } catch (e) {
-        previewDiv.innerHTML = `<span class="render-error">描画エラー: ${escapeHtml(e.message)}</span>`;
-      }
+      renderLatexPreview(item.latex, previewDiv);
+
+      modes.forEach(m => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `btn-suggest-pill ${item.currentMode === m.key ? "active" : ""}`;
+        btn.textContent = m.label;
+        btn.title = m.tip;
+
+        btn.addEventListener("click", () => {
+          item.currentMode = m.key;
+          item.latex = item.suggestions[m.key];
+          latexBox.textContent = item.latex;
+          renderLatexPreview(item.latex, previewDiv);
+
+          // アクティブスタイル切替
+          suggestPills.querySelectorAll(".btn-suggest-pill").forEach(p => p.classList.remove("active"));
+          btn.classList.add("active");
+        });
+
+        suggestPills.appendChild(btn);
+      });
+
+      tdLatex.appendChild(suggestPills);
+      tdLatex.appendChild(latexBox);
+      tr.appendChild(tdLatex);
+
+      // LaTeX プレビュー
+      const tdPreview = document.createElement("td");
+      tdPreview.className = "col-preview";
       tdPreview.appendChild(previewDiv);
       tr.appendChild(tdPreview);
 
-      // アクション（コピーボタン等）
+      // 操作ボタン
       const tdAction = document.createElement("td");
       tdAction.className = "col-action";
+
       const copyBtn = document.createElement("button");
       copyBtn.className = "btn-secondary btn-sm";
       copyBtn.innerHTML = `📋 LaTeXコピー`;
-      copyBtn.title = "この数式のLaTeXコードをコピー";
+      copyBtn.title = "現在選択中のサジェストLaTeXコードをコピー";
       copyBtn.addEventListener("click", () => {
         copyToClipboard(item.latex, `数式 #${item.id} のLaTeXをコピーしました`);
       });
@@ -571,6 +577,21 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
 
       resultsTableBody.appendChild(tr);
     });
+  }
+
+  function renderLatexPreview(latex, container) {
+    try {
+      if (window.katex) {
+        window.katex.render(latex, container, {
+          displayMode: true,
+          throwOnError: false
+        });
+      } else {
+        container.textContent = latex;
+      }
+    } catch (e) {
+      container.innerHTML = `<span class="render-error">描画エラー: ${escapeHtml(e.message)}</span>`;
+    }
   }
 
   function escapeHtml(str) {
@@ -598,151 +619,38 @@ V 最大航海速力（1.4.3.1-7 参照） knot`
     runDetection();
   });
 
-  sampleBtn1.addEventListener("click", () => {
-    inputText.value = samples.sample1;
+  // サンプルボタンのイベント登録
+  sampleBtnShip.addEventListener("click", () => {
+    inputText.value = practicalSamples.ship;
     runDetection();
   });
 
-  sampleBtn2.addEventListener("click", () => {
-    inputText.value = samples.sample2;
+  sampleBtnPhysics.addEventListener("click", () => {
+    inputText.value = practicalSamples.physics;
     runDetection();
   });
 
-  sampleBtn3.addEventListener("click", () => {
-    inputText.value = samples.sample3;
+  sampleBtnML.addEventListener("click", () => {
+    inputText.value = practicalSamples.ml;
     runDetection();
   });
 
-  if (sampleBtn4) {
-    sampleBtn4.addEventListener("click", () => {
-      inputText.value = samples.sample4;
-      runDetection();
-    });
-  }
+  sampleBtnMech.addEventListener("click", () => {
+    inputText.value = practicalSamples.mech;
+    runDetection();
+  });
 
+  // 全LaTeX一括コピー
   copyAllBtn.addEventListener("click", () => {
-    const text = inputText.value;
-    const items = detector.detectAndConvert(text);
-    if (items.length === 0) {
+    if (currentItems.length === 0) {
       showToast("コピー対象の数式がありません");
       return;
     }
-    const allLatex = items.map(it => `% No.${it.id}: ${it.original} (${it.category})\n$$ ${it.latex} $$`).join("\n\n");
-    copyToClipboard(allLatex, `全 ${items.length} 件のLaTeXを一括コピーしました！`);
+    const allLatex = currentItems.map(it => `% No.${it.id}: ${it.original} (${it.category} - ${it.currentMode})\n$$ ${it.latex} $$`).join("\n\n");
+    copyToClipboard(allLatex, `全 ${currentItems.length} 件のLaTeXを一括コピーしました！`);
   });
 
-  // 辞書ビューア表示
-  function renderDictionaryViewer(query = "") {
-    if (!dictContainer || !MATH_DICTIONARY.namedFormulas) return;
-
-    dictContainer.innerHTML = "";
-    const filter = query.toLowerCase().trim();
-
-    const categories = {};
-    MATH_DICTIONARY.namedFormulas.forEach(item => {
-      const matches = !filter || 
-        item.keywords.some(k => k.toLowerCase().includes(filter)) ||
-        item.category.toLowerCase().includes(filter) ||
-        item.description.toLowerCase().includes(filter) ||
-        item.latex.toLowerCase().includes(filter);
-
-      if (matches) {
-        if (!categories[item.category]) {
-          categories[item.category] = [];
-        }
-        categories[item.category].push(item);
-      }
-    });
-
-    const catKeys = Object.keys(categories);
-    if (catKeys.length === 0) {
-      dictContainer.innerHTML = `<div class="dict-empty">該当する公式が見つかりませんでした</div>`;
-      return;
-    }
-
-    catKeys.forEach(cat => {
-      const section = document.createElement("div");
-      section.className = "dict-category-section";
-
-      const catTitle = document.createElement("h4");
-      catTitle.className = "dict-category-title";
-      catTitle.textContent = cat;
-      section.appendChild(catTitle);
-
-      const grid = document.createElement("div");
-      grid.className = "dict-card-grid";
-
-      categories[cat].forEach(item => {
-        const card = document.createElement("div");
-        card.className = "dict-card";
-
-        const header = document.createElement("div");
-        header.className = "dict-card-header";
-        header.innerHTML = `<strong>${escapeHtml(item.keywords[0])}</strong>`;
-        card.appendChild(header);
-
-        if (item.description) {
-          const desc = document.createElement("div");
-          desc.className = "dict-card-desc";
-          desc.textContent = item.description;
-          card.appendChild(desc);
-        }
-
-        const preview = document.createElement("div");
-        preview.className = "dict-card-preview";
-        try {
-          if (window.katex) {
-            window.katex.render(item.latex, preview, {
-              displayMode: false,
-              throwOnError: false
-            });
-          } else {
-            preview.textContent = item.latex;
-          }
-        } catch (e) {
-          preview.textContent = item.latex;
-        }
-        card.appendChild(preview);
-
-        const actions = document.createElement("div");
-        actions.className = "dict-card-actions";
-        
-        const insertBtn = document.createElement("button");
-        insertBtn.className = "btn-secondary btn-xs";
-        insertBtn.textContent = "入力欄に挿入";
-        insertBtn.addEventListener("click", () => {
-          inputText.value += (inputText.value ? "\n" : "") + item.keywords[0];
-          runDetection();
-          showToast(`「${item.keywords[0]}」を入力欄に挿入しました`);
-        });
-
-        const copyLatexBtn = document.createElement("button");
-        copyLatexBtn.className = "btn-secondary btn-xs";
-        copyLatexBtn.textContent = "LaTeXコピー";
-        copyLatexBtn.addEventListener("click", () => {
-          copyToClipboard(item.latex, `「${item.keywords[0]}」のLaTeXをコピーしました`);
-        });
-
-        actions.appendChild(insertBtn);
-        actions.appendChild(copyLatexBtn);
-        card.appendChild(actions);
-
-        grid.appendChild(card);
-      });
-
-      section.appendChild(grid);
-      dictContainer.appendChild(section);
-    });
-  }
-
-  if (dictSearch) {
-    dictSearch.addEventListener("input", (e) => {
-      renderDictionaryViewer(e.target.value);
-    });
-  }
-
-  // 初期表示: ユーザーの提示したPDFコピペサンプルを初期値として設定
-  inputText.value = samples.sample4;
+  // 初期ロード時実行（船舶規則・表コピペサンプルをセット）
+  inputText.value = practicalSamples.ship;
   runDetection();
-  renderDictionaryViewer();
 });
