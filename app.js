@@ -3,6 +3,9 @@
  * - 改行で崩れた分数・式の復元
  * - 表記号列・独立変数の自動抽出
  * - 下付き添字 / 乗算(A·B) / 上付き累乗(A^B) / 単一変数の解釈サジェスト機能
+ * - ファイル入力 (ドラッグ&ドロップ / ファイル選択)
+ * - Python / Excel / 各種プログラミング言語の数式記法対応
+ * - 重複検知の自動排除・優先順位統合
  */
 
 class MathFormulaDetector {
@@ -18,38 +21,30 @@ class MathFormulaDetector {
   detectAndConvert(text) {
     if (!text || typeof text !== "string") return [];
 
-    const results = [];
+    const rawResults = [];
     const usedRanges = [];
 
     const isOverlapping = (start, end) => {
       return usedRanges.some(r => Math.max(start, r.start) < Math.min(end, r.end));
     };
 
-    const addResult = (original, type, category, start, end, description = "") => {
-      // 4つの解釈サジェストを生成
-      const suggestions = {
-        subscript: this.convertRawExpressionToLatex(original, "subscript"),
-        multiply: this.convertRawExpressionToLatex(original, "multiply"),
-        superscript: this.convertRawExpressionToLatex(original, "superscript"),
-        literal: this.convertRawExpressionToLatex(original, "literal")
-      };
+    const addRawResult = (original, type, category, start, end, description = "", priority = 1) => {
+      const trimmed = original.trim();
+      if (!trimmed) return;
 
-      results.push({
-        id: results.length + 1,
-        original: original.trim(),
-        latex: suggestions.subscript, // デフォルト表示は下付き添字
-        currentMode: "subscript",
-        suggestions,
+      rawResults.push({
+        original: trimmed,
         type,
         category: category || "数式",
         description,
-        range: [start, end]
+        range: [start, end],
+        priority // 高い優先度(例: 明示的LaTeX=3, 等式ブロック=2, 構文検知=1)
       });
       usedRanges.push({ start, end });
     };
 
     // ----------------------------------------------------
-    // ステップ 1: 明示的なLaTeX記法 ($...$, $$...$$, `...`) の検出
+    // ステップ 1: 明示的なLaTeX記法 ($...$, $$...$$, `...`) の検出 (優先度: 高)
     // ----------------------------------------------------
     const explicitRegexes = [
       { regex: /\$\$([\s\S]+?)\$\$/g, type: "TeXブロック ($$...$$)" },
@@ -63,7 +58,7 @@ class MathFormulaDetector {
         const start = match.index;
         const end = start + match[0].length;
         if (!isOverlapping(start, end)) {
-          addResult(match[1], type, "明示的数式記法", start, end);
+          addRawResult(match[1], type, "明示的数式記法", start, end, "TeX/コード記法", 3);
         }
       }
     }
@@ -128,7 +123,7 @@ class MathFormulaDetector {
 
         const blockEnd = currentStart + formulaBlock.length;
         if (!isOverlapping(currentStart, blockEnd)) {
-          addResult(formulaBlock, "等式・算式検知", "方程式・計算式", currentStart, blockEnd);
+          addRawResult(formulaBlock, "等式・算式検知", "方程式・計算式", currentStart, blockEnd, "等式ブロック", 2);
         }
 
         lineOffset = nextOffset;
@@ -139,21 +134,21 @@ class MathFormulaDetector {
       // パターン 2-B: 表の記号列（独立行に置かれた英字・数学イタリック記号: 例 𝐶𝑊_𝐿𝐶, 𝐶𝑉𝑃_𝐿𝐶）
       if (/^[\u{1D400}-\u{1D7FF}A-Za-z0-9_]+$/u.test(trimmed)) {
         if (!isOverlapping(currentStart, currentEnd)) {
-          addResult(trimmed, "表記号検知", "変数・係数記号", currentStart, currentEnd);
+          addRawResult(trimmed, "表記号検知", "変数・係数記号", currentStart, currentEnd, "独立記号", 1);
         }
         lineOffset += rawLine.length + 1;
         i++;
         continue;
       }
 
-      // パターン 2-C: 「V 最大航海速力... knot」のように行頭に独立した英字変数がある場合
+      // パターン 2-C: 行頭に独立した英字変数がある場合
       const rowMatch = trimmed.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])\s+([\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF].*)/u);
       if (rowMatch) {
         const symbol = rowMatch[1];
         const symStart = currentStart;
         const symEnd = currentStart + symbol.length;
         if (!isOverlapping(symStart, symEnd)) {
-          addResult(symbol, "表記号検知", "変数・係数記号", symStart, symEnd, "表行頭の独立変数");
+          addRawResult(symbol, "表記号検知", "変数・係数記号", symStart, symEnd, "表行頭の独立変数", 1);
         }
       }
 
@@ -162,9 +157,9 @@ class MathFormulaDetector {
     }
 
     // ----------------------------------------------------
-    // ステップ 3: テキスト中の一般的な数式・関係式の検知
+    // ステップ 3: テキスト中の一般的な数式・関係式の検知 (インテグラル・代数・関数等)
     // ----------------------------------------------------
-    const mathPattern = /((?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+[=<>≦≧≠≒+\-*\/×÷±∓^−]\s*(?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+)/gu;
+    const mathPattern = /((?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min|abs|np|math)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+[=<>≦≧≠≒+\-*\/×÷±∓^−]\s*(?:(?:\b(?:sin|cos|tan|log|ln|lim|sum|int|sqrt|cbrt|det|vec|max|min|abs|np|math)\b|[0-9a-zA-Z\u03B1-\u03C9\u0391-\u03A9\u{1D400}-\u{1D7FF}_^{}\(\)\[\]|\+\-\*\/×÷±∓=<>≦≧≠≒√∫∑π・'−])\s*)+)/gu;
 
     let mMatch;
     while ((mMatch = mathPattern.exec(text)) !== null) {
@@ -179,17 +174,58 @@ class MathFormulaDetector {
 
       const mathCharCount = (candidate.match(/[0-9a-zA-Z\u{1D400}-\u{1D7FF}=+\-*/^√∫∑<>≦≧≠−]/gu) || []).length;
       if (mathCharCount >= 3 && !isOverlapping(start, end)) {
-        addResult(candidate, "構文検知", "代数・関係式", start, end);
+        addRawResult(candidate, "構文検知", "代数・関係式", start, end, "構文解析", 1);
       }
     }
 
-    // 出現順に並び替え
-    results.sort((a, b) => a.range[0] - b.range[0]);
-    results.forEach((item, index) => {
-      item.id = index + 1;
+    // ----------------------------------------------------
+    // 重複・包含結果の統合とソート (ユーザーレビュー対応)
+    // ----------------------------------------------------
+    rawResults.sort((a, b) => {
+      // 包含関係がある場合は長い方（より完全な数式）を優先
+      const lenA = a.range[1] - a.range[0];
+      const lenB = b.range[1] - b.range[0];
+      if (a.range[0] <= b.range[0] && a.range[1] >= b.range[1]) return -1;
+      if (b.range[0] <= a.range[0] && b.range[1] >= a.range[1]) return 1;
+      return a.range[0] - b.range[0];
     });
 
-    return results;
+    const uniqueResults = [];
+    const seenLatex = new Set();
+
+    for (const r of rawResults) {
+      // 4つの解釈サジェストを生成
+      const suggestions = {
+        subscript: this.convertRawExpressionToLatex(r.original, "subscript"),
+        multiply: this.convertRawExpressionToLatex(r.original, "multiply"),
+        superscript: this.convertRawExpressionToLatex(r.original, "superscript"),
+        literal: this.convertRawExpressionToLatex(r.original, "literal")
+      };
+
+      const primaryLatex = suggestions.subscript;
+
+      // 重複除外判定: 同一LaTeX表現、または同一原文がすでに登録済みの場合はスキップ
+      const dedupKey = `${r.original}:::${primaryLatex}`;
+      if (seenLatex.has(dedupKey) || seenLatex.has(primaryLatex)) {
+        continue;
+      }
+      seenLatex.add(dedupKey);
+      seenLatex.add(primaryLatex);
+
+      uniqueResults.push({
+        id: uniqueResults.length + 1,
+        original: r.original,
+        latex: primaryLatex,
+        currentMode: "subscript",
+        suggestions,
+        type: r.type,
+        category: r.category,
+        description: r.description,
+        range: r.range
+      });
+    }
+
+    return uniqueResults;
   }
 
   /**
@@ -204,7 +240,20 @@ class MathFormulaDetector {
 
     s = s.replace(/^(\$\$|\$|`)+|(\$\$|\$|`)+$/g, "");
 
-    // 1. 改行された縦並び分数の復元 (PDFコピペ対策)
+    // 1. プログラミング言語・Excel記法の事前正規化
+    // Pythonべき乗: x**2 -> x^2, (a+b)**2 -> (a+b)^2
+    s = s.replace(/\*\*/g, "^");
+    // np. / math. プレフィックスの除去: math.sqrt -> sqrt, np.sin -> sin
+    s = s.replace(/\b(?:math|np|numpy)\.([a-zA-Z]+)/g, "$1");
+    // abs(x) -> |x|
+    s = s.replace(/\babs\(([^()]+)\)/g, "|$1|");
+    // sqrt, cbrt
+    s = s.replace(/\bcbrt\(([^()]+)\)/g, "\\sqrt[3]{$1}");
+    s = s.replace(/\bsqrt\(([^()]+)\)/g, "\\sqrt{$1}");
+    s = s.replace(/√\(([^()]+)\)/g, "\\sqrt{$1}");
+    s = s.replace(/√([0-9a-zA-Z\u{1D400}-\u{1D7FF}]+)/gu, "\\sqrt{$1}");
+
+    // 2. 改行された縦並び分数の復元 (PDFコピペ対策)
     s = s.replace(/\(([^()\n]+?)\s*([+\-−*\/])\s*\n\s*([^\s()\n]+)\s*\n\s*([^\s()\n]+)\s*\n?\s*\)/gu, (match, left, op, num, den) => {
       return `(${this.convertRawExpressionToLatex(left.trim(), mode)} ${op} \\frac{${this.convertRawExpressionToLatex(num, mode)}}{${this.convertRawExpressionToLatex(den, mode)}})`;
     });
@@ -215,7 +264,20 @@ class MathFormulaDetector {
 
     s = s.replace(/\s*\n\s*/g, " ");
 
-    // 2. ギリシャ文字・演算子の正規化
+    // 3. インテグラル（積分記号）の正規化
+    // int_0^1 f(x) dx or ∫_0^1 f(x) dx -> \int_{0}^{1} f(x)\,dx
+    s = s.replace(/(?:\\int|int|∫)(?:_\{([^}]+)\}|_([a-zA-Z0-9+\-]+))?(?:\^\{([^}]+)\}|\^([a-zA-Z0-9+\-]+))?/g, (match, subB, subS, supB, supS) => {
+      const sub = subB || subS;
+      const sup = supB || supS;
+      if (sub && sup) return `\\int_{${sub}}^{${sup}} `;
+      if (sub) return `\\int_{${sub}} `;
+      if (sup) return `\\int^{${sup}} `;
+      return `\\int `;
+    });
+    // dx, dy, dt, dz の前に \, を挿入
+    s = s.replace(/(?<=[0-9a-zA-Z\)\}\]])\s*d([xyztuvw])\b/g, "\\,d$1");
+
+    // 4. ギリシャ文字・演算子の置換
     if (this.tokens.greek) {
       for (const item of this.tokens.greek) {
         s = s.replace(item.pattern, item.replace);
@@ -227,38 +289,50 @@ class MathFormulaDetector {
       }
     }
 
-    // 3. 識別子（変数・添字）の解釈モード別変換
-    s = s.replace(/[\u{1D400}-\u{1D7FF}A-Za-z0-9_]+/gu, (token) => {
-      if (/^\d+$/.test(token)) return token;
-      if (/^(sin|cos|tan|log|ln|exp|lim|sum|int|sqrt|cbrt|frac|vec|mathrm|partial)$/.test(token)) return token;
-      return this.formatIdentifierWithMode(token, mode);
-    });
-
-    // 4. 関数名正規化
-    s = s.replace(/\b(sin|cos|tan|log|ln|exp|max|min|det)\b(?!\s*\\)/g, "\\$1");
-
-    // 5. 乗算記号 * の変換
-    s = s.replace(/\s*\*\s*/g, " \\cdot ");
-
-    // 6. 分数の簡易変換 (A)/(B) -> \frac{A}{B}
+    // 5. 分数の簡易変換 (A)/(B) -> \frac{A}{B}
     let prev;
     do {
       prev = s;
       s = s.replace(/\(([^()]+)\)\s*\/\s*\(([^()]+)\)/g, "\\frac{$1}{$2}");
     } while (s !== prev);
 
-    s = s.replace(/([0-9a-zA-Z\\]+)\s*\/\s*([0-9a-zA-Z\\]+)/g, (match, num, den) => {
-      if (num.startsWith("\\frac") || den.startsWith("\\frac")) return match;
+    // 単純な数値/変数の分数 a/b -> \frac{a}{b} (ただし \pm や \frac などのコマンド、または dx 等は避ける)
+    s = s.replace(/(?<![\\a-zA-Z0-9])([0-9a-zA-Z\u{1D400}-\u{1D7FF}]+)\s*\/\s*([0-9a-zA-Z\u{1D400}-\u{1D7FF}]+)(?![a-zA-Z0-9])/gu, (match, num, den) => {
+      if (num.startsWith("frac") || den.startsWith("frac")) return match;
       return `\\frac{${num}}{${den}}`;
     });
 
-    // 7. 指数 ^ と下付き _ の括弧囲み保証
+    // 6. トークン分解と識別子の処理（★超重要: \で始まるLaTeXコマンドは保護し \p_{m} などの誤変換を防止★）
+    s = s.replace(/(\\[a-zA-Z]+)|([\u{1D400}-\u{1D7FF}A-Za-z0-9_]+)/gu, (match, latexCmd, identifier) => {
+      // A. LaTeXコマンドはそのまま保護！ (\pm, \times, \alpha, \frac, \sqrt 等)
+      if (latexCmd) {
+        return latexCmd;
+      }
+      // B. 純粋な数字
+      if (/^\d+$/.test(identifier)) {
+        return identifier;
+      }
+      // C. 予約関数名
+      if (/^(sin|cos|tan|log|ln|exp|lim|sum|int|sqrt|cbrt|frac|vec|mathrm|partial|max|min|det)$/.test(identifier)) {
+        return `\\${identifier}`;
+      }
+      // D. 識別子のモード別変換
+      return this.formatIdentifierWithMode(identifier, mode);
+    });
+
+    // 7. 乗算記号 * の変換
+    s = s.replace(/\s*\*\s*/g, " \\cdot ");
+
+    // 8. 指数 ^ と下付き _ の括弧囲み保証
     s = s.replace(/\^([a-zA-Z0-9+\-]+)(?!})/g, "^{$1}");
 
-    // 8. 微分記法
-    s = s.replace(/d([a-zA-Z])\/d([a-zA-Z])/g, "\\frac{d$1}{d$2}");
+    // 9. 微分記法
     s = s.replace(/\\partial\s*([a-zA-Z])\/\\partial\s*([a-zA-Z])/g, "\\frac{\\partial $1}{\\partial $2}");
 
+    // 10. 絶対値 |...| の美化
+    s = s.replace(/\|([^|]+)\|/g, "\\left| $1 \\right|");
+
+    // 括弧前後の空白調整
     s = s.replace(/\s*\)/g, ")");
     s = s.replace(/\(\s*/g, "(");
     s = s.replace(/\s+/g, " ").trim();
@@ -272,7 +346,7 @@ class MathFormulaDetector {
    * @param {string} mode 'subscript' | 'multiply' | 'superscript' | 'literal'
    */
   formatIdentifierWithMode(id, mode) {
-    // A. アンダースコアを含むトークン (例: CW_LC, CVP_LC, X_Y)
+    // A. アンダースコアを含むトークン (例: CW_LC, CVP_LC, x_i, a_n)
     let m = id.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])([\u{1D400}-\u{1D7FF}A-Za-z]*)_([\u{1D400}-\u{1D7FF}A-Za-z0-9_]+)$/u);
     if (m) {
       const base = m[1];
@@ -293,20 +367,33 @@ class MathFormulaDetector {
       }
     }
 
-    // B. 2文字の英字・数学イタリック文字 (例: CW, CB, fT, AB, xy)
+    // B. 2文字の英字 (例: ax, bx, 2a, CW, CB, fT)
+    // ★ユーザーレビュー対応: x, y, z, t が後ろに来る場合は係数×変数なので下付きにしない！
     m = id.match(/^([\u{1D400}-\u{1D7FF}A-Za-z])([\u{1D400}-\u{1D7FF}A-Za-z])$/u);
     if (m) {
       const b1 = m[1];
       const b2 = m[2];
 
-      switch (mode) {
-        case "subscript": // 下付き解釈: C_W, f_T
-          return `${b1}_{${b2}}`;
-        case "multiply": // 乗算解釈: C · W, A · B
+      const isVariableSuffix = /[xyztuvw]/.test(b2);
+      const isBothLower = /^[a-z]{2}$/.test(id);
+
+      if (isVariableSuffix || isBothLower) {
+        // ax, bx, cx, dt, dx などは下付きにせずそのまま（乗算モード時は a \cdot x）
+        if (mode === "multiply") {
           return `${b1} \\cdot ${b2}`;
-        case "superscript": // 上付き累乗解釈: C^W, x^2
+        }
+        return `${b1}${b2}`; // 'ax', 'bx' のまま保持
+      }
+
+      // 工学的記号（大文字+大文字 CW, CB や fT など）
+      switch (mode) {
+        case "subscript":
+          return `${b1}_{${b2}}`;
+        case "multiply":
+          return `${b1} \\cdot ${b2}`;
+        case "superscript":
           return `${b1}^{${b2}}`;
-        case "literal": // 通常の連名変数: \mathrm{CW}
+        case "literal":
           return `\\mathrm{${id}}`;
         default:
           return `${b1}_{${b2}}`;
@@ -320,11 +407,11 @@ class MathFormulaDetector {
       const num = m[2];
 
       switch (mode) {
-        case "subscript": // x_2
+        case "subscript":
           return `${letter}_{${num}}`;
-        case "superscript": // x^2
+        case "superscript":
           return `${letter}^{${num}}`;
-        case "multiply": // x · 2
+        case "multiply":
           return `${letter} \\cdot ${num}`;
         case "literal":
           return `\\mathrm{${id}}`;
@@ -353,11 +440,18 @@ document.addEventListener("DOMContentLoaded", () => {
   const clearBtn = document.getElementById("clearBtn");
   const autoDetectCheckbox = document.getElementById("autoDetect");
 
-  // 実践的サンプルボタン群
+  // ファイル入力要素
+  const dropZone = document.getElementById("dropZone");
+  const fileInput = document.getElementById("fileInput");
+  const fileSelectBtn = document.getElementById("fileSelectBtn");
+  const fileLoadedInfo = document.getElementById("fileLoadedInfo");
+
+  // お試し例文ボタン群
   const sampleBtnShip = document.getElementById("sampleBtnShip");
+  const sampleBtnQuad = document.getElementById("sampleBtnQuad");
+  const sampleBtnIntegral = document.getElementById("sampleBtnIntegral");
+  const sampleBtnPython = document.getElementById("sampleBtnPython");
   const sampleBtnPhysics = document.getElementById("sampleBtnPhysics");
-  const sampleBtnML = document.getElementById("sampleBtnML");
-  const sampleBtnMech = document.getElementById("sampleBtnMech");
 
   const resultsSection = document.getElementById("resultsSection");
   const resultsTableBody = document.getElementById("resultsTableBody");
@@ -366,7 +460,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const copyAllBtn = document.getElementById("copyAllBtn");
   const copyToast = document.getElementById("copyToast");
 
-  // 実用的なお試し例文集（PDF・論文・規格書コピペ）
+  // 実用的なお試し例文集（高校数学を排し、実践的数式・工学・プログラミング数式を提供）
   const practicalSamples = {
     ship: `記号 意味 単位
 𝐶𝑊_𝐿𝐶
@@ -386,34 +480,45 @@ document.addEventListener("DOMContentLoaded", () => {
 -
 V 最大航海速力（1.4.3.1-7 参照） knot`,
 
+    quad: `【代数方程式・解の公式の技術計算メモ】
+2次関数の一般形:
+y = ax^2 + bx + c
+
+2次方程式の解の公式 (± と 平方根 sqrt を含む):
+x = (-b ± sqrt(b^2 - 4ac))/(2a)
+
+判別式:
+D = b^2 - 4ac`,
+
+    integral: `【微積分・解析力学の技術レポート】
+定積分による定常流の総流量計算:
+∫_0^1 x^2 dx = 1/3
+
+任意区間での関数積分:
+int_a^b f(x) dx
+
+偏微分方程式 (熱伝導方程式):
+∂u/∂t = alpha * (∂u/∂x)`,
+
+    python: `【Python・NumPy・データ処理の数式コード】
+多項式フィッティング:
+y = a * x**2 + b * x + c
+
+ユークリッド距離の計算:
+z = math.sqrt(x**2 + y**2)
+
+不等式・許容誤差条件:
+abs(x - 1) <= 5`,
+
     physics: `【流体力学 & 熱力学の仕様書コピペ例】
-配管内流体のレイノルズ数 Re は代表速度 v と管径 D および動粘性係数 ν を用いて次式で定義される：
+配管内流体のレイノルズ数 Re:
 Re =
 rho v D
 mu
 臨界レイノルズ数 Re_c ≒ 2300 において層流から乱流へ遷移する。
 
-また、理想気体の状態方程式は圧力 P, 体積 V, 物質量 n, 温度 T に対して
-P V = n R T
-が成立し、密度 rho_0 と標準状態での圧力 P_0 の関係式として用いられる。`,
-
-    ml: `【機械学習・最適化アルゴリズムの論文コピペ例】
-平均二乗誤差 (MSE) による損失関数 L は、予測値 y_hat と真値 y_i の差として定義される：
-L = 1/2 sum (y_i - y_hat)^2
-
-パラメータ更新則において、学習率 alpha および勾配 ∂L/∂W を用いて重み行列 W_new を次のように逐次更新する：
-W_new = W_old - alpha (∂L/∂W)
-ここでバイアス項 b_1, b_2 も同様の更新式に従う。`,
-
-    mech: `【材料力学・構造設計メモのコピペ例】
-断面にかかる曲げモーメントを M, 断面係数を Z とするとき、最大曲げ応力 sigma_max は
-sigma_max =
-M
-Z
-で与えられる。
-幅 b, 高さ h の長方形断面における断面二次モーメント I は
-I = b h^3 / 12
-であり、せん断応力 tau_max <= tau_a (許容応力) を満足しなければならない。`
+理想気体の状態方程式:
+P V = n R T`
   };
 
   function showToast(message) {
@@ -604,6 +709,58 @@ I = b h^3 / 12
       .replace(/'/g, "&#039;");
   }
 
+  // ファイル読み込み処理
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      inputText.value = e.target.result;
+      if (fileLoadedInfo) {
+        fileLoadedInfo.textContent = `📄 読込完了: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        fileLoadedInfo.style.display = "inline-block";
+      }
+      showToast(`ファイル "${file.name}" を読み込みました`);
+      runDetection();
+    };
+    reader.onerror = () => {
+      showToast("ファイルの読み込みに失敗しました");
+    };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  if (fileSelectBtn && fileInput) {
+    fileSelectBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files && e.target.files[0]) {
+        handleFile(e.target.files[0]);
+      }
+    });
+  }
+
+  if (dropZone) {
+    ["dragenter", "dragover"].forEach(eventName => {
+      dropZone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach(eventName => {
+      dropZone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove("dragover");
+      });
+    });
+
+    dropZone.addEventListener("drop", (e) => {
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+        handleFile(e.dataTransfer.files[0]);
+      }
+    });
+  }
+
   detectBtn.addEventListener("click", runDetection);
 
   let debounceTimer = null;
@@ -616,29 +773,51 @@ I = b h^3 / 12
 
   clearBtn.addEventListener("click", () => {
     inputText.value = "";
+    if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+    if (fileInput) fileInput.value = "";
     runDetection();
   });
 
   // サンプルボタンのイベント登録
-  sampleBtnShip.addEventListener("click", () => {
-    inputText.value = practicalSamples.ship;
-    runDetection();
-  });
+  if (sampleBtnShip) {
+    sampleBtnShip.addEventListener("click", () => {
+      inputText.value = practicalSamples.ship;
+      if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+      runDetection();
+    });
+  }
 
-  sampleBtnPhysics.addEventListener("click", () => {
-    inputText.value = practicalSamples.physics;
-    runDetection();
-  });
+  if (sampleBtnQuad) {
+    sampleBtnQuad.addEventListener("click", () => {
+      inputText.value = practicalSamples.quad;
+      if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+      runDetection();
+    });
+  }
 
-  sampleBtnML.addEventListener("click", () => {
-    inputText.value = practicalSamples.ml;
-    runDetection();
-  });
+  if (sampleBtnIntegral) {
+    sampleBtnIntegral.addEventListener("click", () => {
+      inputText.value = practicalSamples.integral;
+      if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+      runDetection();
+    });
+  }
 
-  sampleBtnMech.addEventListener("click", () => {
-    inputText.value = practicalSamples.mech;
-    runDetection();
-  });
+  if (sampleBtnPython) {
+    sampleBtnPython.addEventListener("click", () => {
+      inputText.value = practicalSamples.python;
+      if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+      runDetection();
+    });
+  }
+
+  if (sampleBtnPhysics) {
+    sampleBtnPhysics.addEventListener("click", () => {
+      inputText.value = practicalSamples.physics;
+      if (fileLoadedInfo) fileLoadedInfo.style.display = "none";
+      runDetection();
+    });
+  }
 
   // 全LaTeX一括コピー
   copyAllBtn.addEventListener("click", () => {

@@ -132,6 +132,51 @@ h1 {
   color: var(--text-muted);
 }
 
+/* ファイルドロップゾーン */
+.file-dropzone {
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  background: #f8fafc;
+  margin-bottom: 12px;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.file-dropzone.dragover {
+  border-color: var(--primary-color);
+  background: var(--primary-light);
+}
+
+.dropzone-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+}
+
+.dropzone-icon {
+  font-size: 1.2rem;
+}
+
+.dropzone-text {
+  color: var(--text-muted);
+}
+
+.file-loaded-info {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: var(--primary-color);
+  background: var(--primary-light);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  display: inline-block;
+}
+
 textarea#inputText {
   width: 100%;
   min-height: 140px;
